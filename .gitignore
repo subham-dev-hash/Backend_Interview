@@ -3,3 +3,9 @@ dist/
 node_modules/
 *.vscode-test*
 *.vsix
+
+# env files
+.env
+.env.*
+!.env.example
+!.env.sample
