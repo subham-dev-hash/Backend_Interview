@@ -7,6 +7,8 @@ import { getChatModelResponse } from "./models/chat_model.js";
 import { initializeChatbot } from "./prompts/index.js";
 import { getStructuredOutput } from "./outputs/structured_output.js";
 import { outputParser } from "./outputs/output_parser.js";
+import { simpleChain } from "./chains/simple_chain.js";
+import { sequentialChain } from "./chains/sequential_chain.js";
 
 dotenv.config();
 
@@ -36,4 +38,6 @@ dotenv.config();
 // getChatModelResponse();
 // initializeChatbot();
 // getStructuredOutput();
-outputParser();
+// outputParser();
+// simpleChain();
+sequentialChain();
