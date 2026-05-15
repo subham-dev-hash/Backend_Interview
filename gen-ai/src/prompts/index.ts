@@ -11,6 +11,7 @@
  * Human Message
  * AI Message
  * 
+ * Document similarity -> cosine similarity
  * 
  */
 

@@ -5,6 +5,8 @@ import dotenv from "dotenv"
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai'
 import { getChatModelResponse } from "./models/chat_model.js";
 import { initializeChatbot } from "./prompts/index.js";
+import { getStructuredOutput } from "./outputs/structured_output.js";
+import { outputParser } from "./outputs/output_parser.js";
 
 dotenv.config();
 
@@ -32,4 +34,6 @@ dotenv.config();
 
 
 // getChatModelResponse();
-initializeChatbot();
+// initializeChatbot();
+// getStructuredOutput();
+outputParser();
