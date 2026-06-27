@@ -35,9 +35,9 @@ dotenv.config();
 // );
 
 
-// getChatModelResponse();
+getChatModelResponse();
 // initializeChatbot();
 // getStructuredOutput();
 // outputParser();
 // simpleChain();
-sequentialChain();
+// sequentialChain();
