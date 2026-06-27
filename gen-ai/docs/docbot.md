@@ -22,7 +22,12 @@ flowchart LR
 
 1. **Node.js 20+** installed (`node -v` to check).
 2. A **Gemini API key** — get one free at https://aistudio.google.com/app/apikey
-3. Basic TypeScript familiarity (you already know enough).
+3. **Docker** installed (to run a local Chroma vector database server).
+4. Basic TypeScript familiarity (you already know enough).
+
+> Chroma's JS client talks to a **Chroma server** over HTTP — it isn't a pure
+> in-process library like in Python. We'll run that server locally with Docker
+> in Stage 5, no cloud account needed.
 
 ---
 
@@ -39,19 +44,19 @@ docbot/
 │   ├── 03-structured-output.ts    # Stage 3
 │   ├── 04-tool-agent.ts           # Stage 4
 │   ├── rag/
-│   │   ├── ingest.ts              # Stage 5: load, split, embed, store
-│   │   └── retrieve.ts            # Stage 6: query the vector store
+│   │   ├── ingest.ts              # Stage 5: load, split, embed, store in Chroma
+│   │   └── retrieve.ts            # Stage 6: query Chroma
 │   └── chatbot.ts                 # Stage 7: final combined CLI app
 ├── data/
 │   └── docs/                      # <-- put your .txt / .pdf files here
-├── vectorstore/                   # auto-generated local vector DB (HNSWLib)
+├── docker-compose.yml              # local Chroma server
 ├── .env
 ├── package.json
 └── tsconfig.json
 ```
 
 ```bash
-mkdir -p docbot/src/rag docbot/data/docs docbot/vectorstore
+mkdir -p docbot/src/rag docbot/data/docs
 cd docbot
 ```
 
@@ -101,7 +106,7 @@ npx tsc --init
 
 ```bash
 npm install langchain @langchain/core @langchain/google-genai zod dotenv
-npm install @langchain/community @langchain/textsplitters hnswlib-node pdf-parse
+npm install @langchain/community @langchain/textsplitters chromadb pdf-parse
 ```
 
 | Package                     | Why                                         |
@@ -110,9 +115,9 @@ npm install @langchain/community @langchain/textsplitters hnswlib-node pdf-parse
 | `@langchain/core`            | Base abstractions (messages, prompts, runnables) |
 | `@langchain/google-genai`    | Gemini chat model + embeddings               |
 | `zod`                        | Schemas for structured output / tool args    |
-| `@langchain/community`       | Document loaders, HNSWLib vector store       |
+| `@langchain/community`       | Document loaders, Chroma vector store wrapper |
 | `@langchain/textsplitters`   | Chunking documents for RAG                   |
-| `hnswlib-node`               | Local, file-based vector store (no DB server needed) |
+| `chromadb`                   | JS client used internally to talk to the Chroma server |
 | `pdf-parse`                  | Lets the PDF loader read PDF files           |
 
 **`.env`**:
@@ -299,7 +304,30 @@ npm run dev src/04-tool-agent.ts
 
 ---
 
-## Stage 5 — RAG: Ingest Your Documents
+## Stage 5 — RAG: Run Chroma + Ingest Your Documents
+
+### 5a. Start a local Chroma server
+
+**`docker-compose.yml`** (project root):
+
+```yaml
+services:
+  chroma:
+    image: chromadb/chroma:latest
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./chroma-data:/data
+```
+
+```bash
+docker compose up -d
+```
+
+This runs Chroma at `http://localhost:8000` and persists data to
+`./chroma-data` on your machine, so your collection survives restarts.
+
+### 5b. Ingest documents
 
 Drop a few `.txt` or `.pdf` files into `data/docs/` first (e.g. a resume,
 a product manual, lecture notes — anything you want to "chat with").
@@ -307,17 +335,17 @@ a product manual, lecture notes — anything you want to "chat with").
 **`src/rag/ingest.ts`**
 
 ```ts
-import fs from "node:fs";
 import path from "node:path";
 import { DirectoryLoader } from "langchain/document_loaders/fs/directory";
 import { TextLoader } from "langchain/document_loaders/fs/text";
 import { PDFLoader } from "@langchain/community/document_loaders/fs/pdf";
 import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
-import { HNSWLib } from "@langchain/community/vectorstores/hnswlib";
+import { Chroma } from "@langchain/community/vectorstores/chroma";
 import { createEmbeddings } from "../config.js";
 
 const DOCS_DIR = path.resolve("data/docs");
-const STORE_DIR = path.resolve("vectorstore");
+const COLLECTION_NAME = "docbot-docs";
+const CHROMA_URL = "http://localhost:8000";
 
 async function main() {
   console.log("Loading documents from", DOCS_DIR);
@@ -338,12 +366,13 @@ async function main() {
   console.log(`Split into ${chunks.length} chunks`);
 
   const embeddings = createEmbeddings();
-  const vectorStore = await HNSWLib.fromDocuments(chunks, embeddings);
 
-  fs.mkdirSync(STORE_DIR, { recursive: true });
-  await vectorStore.save(STORE_DIR);
+  await Chroma.fromDocuments(chunks, embeddings, {
+    collectionName: COLLECTION_NAME,
+    url: CHROMA_URL,
+  });
 
-  console.log("Vector store saved to", STORE_DIR);
+  console.log(`Stored ${chunks.length} chunks in Chroma collection "${COLLECTION_NAME}"`);
 }
 
 main();
@@ -358,10 +387,11 @@ flowchart LR
     A[data/docs/*.txt/.pdf] --> B[DirectoryLoader]
     B --> C[RecursiveCharacterTextSplitter<br/>800 chars, 100 overlap]
     C --> D[Gemini Embeddings<br/>text-embedding-004]
-    D --> E[(HNSWLib Vector Store<br/>saved to /vectorstore)]
+    D --> E[(Chroma Server<br/>localhost:8000)]
 ```
 
-> Run this once whenever you add/change documents.
+> Run this once whenever you add/change documents. Re-running with the same
+> `collectionName` adds to the existing collection.
 
 ---
 
@@ -370,12 +400,12 @@ flowchart LR
 **`src/rag/retrieve.ts`**
 
 ```ts
-import path from "node:path";
-import { HNSWLib } from "@langchain/community/vectorstores/hnswlib";
+import { Chroma } from "@langchain/community/vectorstores/chroma";
 import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { createChatModel, createEmbeddings } from "../config.js";
 
-const STORE_DIR = path.resolve("vectorstore");
+const COLLECTION_NAME = "docbot-docs";
+const CHROMA_URL = "http://localhost:8000";
 
 const RAG_PROMPT = ChatPromptTemplate.fromMessages([
   [
@@ -386,7 +416,10 @@ const RAG_PROMPT = ChatPromptTemplate.fromMessages([
 ]);
 
 export async function askDocs(question: string) {
-  const vectorStore = await HNSWLib.load(STORE_DIR, createEmbeddings());
+  const vectorStore = new Chroma(createEmbeddings(), {
+    collectionName: COLLECTION_NAME,
+    url: CHROMA_URL,
+  });
   const retriever = vectorStore.asRetriever({ k: 4 });
 
   const relevantDocs = await retriever.invoke(question);
@@ -413,7 +446,7 @@ npm run dev src/rag/retrieve.ts "What does my document say about refunds?"
 ```mermaid
 flowchart TD
     Q[User Question] --> E[Embed Question]
-    E --> R[Similarity Search<br/>in HNSWLib]
+    E --> R[Similarity Search<br/>in Chroma Server]
     R --> C[Top-k Relevant Chunks]
     C --> P[Prompt: context + question]
     P --> M[Gemini Model]
@@ -498,11 +531,12 @@ flowchart TD
 ## 5. Run Order Summary
 
 ```bash
+docker compose up -d                      # start the Chroma server (once per session)
 npm run dev src/01-basic-chat.ts          # sanity check Gemini works
 npm run dev src/02-prompt-template.ts     # templated prompts
 npm run dev src/03-structured-output.ts   # typed JSON output
 npm run dev src/04-tool-agent.ts          # tool-calling agent
-npm run dev src/rag/ingest.ts             # build the vector store (run once / after doc changes)
+npm run dev src/rag/ingest.ts             # build the Chroma collection (run once / after doc changes)
 npm run dev src/rag/retrieve.ts "your question"  # test raw RAG
 npm run dev src/chatbot.ts                # final combined chatbot
 ```
@@ -520,8 +554,8 @@ npm run dev src/chatbot.ts                # final combined chatbot
 
 ## 7. Ideas to Extend It Further
 
-- Swap `HNSWLib` for a hosted vector DB (Pinecone, Chroma, Postgres+pgvector)
+- Move Chroma to a persistent cloud instance (Chroma Cloud) instead of local Docker
 - Add a second tool (e.g. web search) so the agent chooses between sources
 - Add streaming (`agent.stream(...)`) for token-by-token CLI output
-- Track citations: return which chunk/source each answer came from
+- Track citations: return which chunk/source each answer came from (Chroma supports metadata filters)
 - Wrap `chatbot.ts` in an Express API and build a small web UI on top
